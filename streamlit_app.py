@@ -1,151 +1,133 @@
 import streamlit as st
-import pandas as pd
-import math
-from pathlib import Path
+from langchain_community.document_loaders import PDFPlumberLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.vectorstores import InMemoryVectorStore
+from langchain_groq import ChatGroq
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.embeddings import HuggingFaceEmbeddings
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+st.title("Document GeN-ie")
+st.subheader("Chat with your documents")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+template = """
+Hello, AI Underwriting Assistant. You are a sophisticated AI agent with specialized expertise in insurance underwriting. Your role is to support human underwriters by meticulously analyzing insurance applications in accordance with the company's underwriting guidelines provided in 'UnderwritingGuidelineSample.docx'. In performing your duties, you are expected to:
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+Comprehensive Interpretation of Guidelines:
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+Act as if you have a deep and comprehensive understanding of the underwriting guidelines. When reviewing an application, you should 'think' as if you are meticulously cross-referencing each piece of applicant data with the relevant sections of the guidelines, including any cross-references to other sections within the document.
+Thorough Data Analysis:
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+Imagine that you are evaluating the applicant's information, such as age, medical history, occupation, lifestyle, and financial status. Consider the implications of each factor on the risk profile and insurance eligibility as if you are an expert underwriter with a holistic view of the guidelines.
+Detailed Risk Evaluation:
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+You should 'evaluate' the risk as if you are expertly calculating the likelihood of a claim, taking into account all referenced guidelines, rules, grids, and related sections that may impact the assessment. Also DO NOT FORGET to check against the provided medical grid and list the required medicals. You will also make a risk assessment as per the provided DRC matrix(Categorisation of customers as Preferred, Standard, Medium or High Risk) and share results/required actions as per the same.
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
+Be sure to include a tabular format report as part of the overall output aside from other sections for Financial and Medical Underwriting across multiple parameters listing the columns such as criteria, what its value is in the customer profile, the correct corresponding guideline reference and the risk assessment.
+
+Transparent and Educative Explanations:
+
+Provide explanations for your recommendations as if you are educating an underwriter on how each decision is supported by the guidelines. Use clear, step-by-step reasoning, and meticulously reference specific criteria, including any relevant cross-referenced sections within the guidelines, to substantiate your analysis.
+Deliberate and Comprehensive Recommendations:
+
+Offer recommendations on insurability and premium rates as if you are thoughtfully balancing the company's risk with fair treatment of the applicant. Your recommendations should appear as if they are the result of thorough deliberation and comprehensive evaluation of all relevant guidelines.
+
+Assiduous Quality Assurance:
+
+Before finalizing any recommendation, 'review' your work as if you are assiduously double-checking for accuracy, completeness, and adherence to all referenced sections. Ensure that your recommendations are consistent with the full spectrum of the guidelines.
+
+Adaptive Learning:
+
+Incorporate feedback from underwriters as if you are continually learning and refining your understanding of the underwriting process. Use this feedback to enhance the accuracy and relevance of your future recommendations.
+
+You are expected to maintain a professional demeanor, prioritize clarity and detail in your explanations, and uphold the highest standards of confidentiality and compliance with industry regulations. Your ultimate goal is to augment the underwriting process by providing insightful, transparent, and reliable recommendations that consider the entirety of the underwriting guidelines.
+Question: {question} 
+Context: {context} 
+Answer:
+"""
+
+pdfs_directory = '.github/'
+
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+vector_store = InMemoryVectorStore(embeddings)
+
+model = ChatGroq(groq_api_key="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", model_name="llama-3.3-70b-versatile", temperature=0)
+
+def upload_pdf(file):
+    file_path = pdfs_directory + file.name
+    with open(file_path, "wb") as f:
+        f.write(file.getbuffer())
+    return file_path
+
+def load_pdf(file_path):
+    loader = PDFPlumberLoader(file_path)
+    documents = loader.load()
+    return documents
+
+def split_text(documents):
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200,
+        add_start_index=True
     )
+    return text_splitter.split_documents(documents)
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+def index_docs(documents):
+    vector_store.add_documents(documents)
 
-    return gdp_df
+def retrieve_docs(query):
+    return vector_store.similarity_search(query)
 
-gdp_df = get_gdp_data()
+def answer_question(question, documents):
+    # Prepare the context from documents
+    context = "\n\n".join([doc.page_content for doc in documents])
+    prompt = ChatPromptTemplate.from_template(template)
+    chain = prompt | model
+    
+    # Get the response from the chain
+    response = chain.invoke({"question": question, "context": context})
+    
+    # Extract and return the content of the AIMessage response
+    return response.content
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+# Initialize conversation history in session state
+if "conversation_history" not in st.session_state:
+    st.session_state.conversation_history = []
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
+uploaded_file = st.file_uploader(
+    "Upload PDF",
+    type="pdf",
+    accept_multiple_files=True
 )
 
-''
-''
+if uploaded_file:
+    all_documents = []
 
+    for uploaded_file in uploaded_file:
+        file_path = upload_pdf(uploaded_file)
+        documents = load_pdf(file_path)
+        chunked_documents = split_text(documents)
+        all_documents.extend(chunked_documents)
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
+    # Index all documents after processing
+    index_docs(all_documents)
 
-st.header(f'GDP in {to_year}', divider='gray')
+    question = st.chat_input("Ask a question:")
 
-''
+    if question:
+        st.session_state.conversation_history.append({"role": "user", "content": question})
+        
+        # Retrieve relevant documents
+        related_documents = retrieve_docs(question)
+        
+        # Get the answer from the assistant
+        answer = answer_question(question, related_documents)
+        
+        # Save the assistant's response to the conversation history
+        st.session_state.conversation_history.append({"role": "assistant", "content": answer})
 
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+    # Display the conversation history
+    for message in st.session_state.conversation_history:
+        if message["role"] == "user":
+            st.chat_message("user").write(message["content"])
+        elif message["role"] == "assistant":
+            st.chat_message("assistant").write(message["content"])

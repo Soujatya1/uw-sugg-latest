@@ -6,8 +6,8 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.embeddings import HuggingFaceEmbeddings
 
-st.title("Document GeN-ie")
-st.subheader("Chat with your documents")
+st.title("Underwriting Assistant")
+st.subheader("Seek Advice, Save Time!")
 
 template = """
 Hello, AI Underwriting Assistant. You are a sophisticated AI agent with specialized expertise in insurance underwriting. Your role is to support human underwriters by meticulously analyzing insurance applications in accordance with the company's underwriting guidelines provided in 'UnderwritingGuidelineSample.docx'. In performing your duties, you are expected to:
